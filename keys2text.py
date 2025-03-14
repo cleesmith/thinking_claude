@@ -22,196 +22,29 @@ from starlette.responses import Response
 from nicegui import app, ui, run, Client, events
 from nicegui import __version__ as nv
 
-from openai import OpenAI
-
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
-from google.generativeai.types import HarmBlockThreshold
-
 import anthropic
 
-from groq import Groq
-from groq import AsyncGroq
-
-from openai import __version__ as oav
 from anthropic import __version__ as av
-from google.generativeai import __version__ as ggv
-from groq import __version__ as gv
-# from ollama import __version__ as ov
 
 from importlib.metadata import version, PackageNotFoundError
+
+from user_session_settings import UserSession
+from user_session_settings import UserSettings
 
 # from icecream import ic
 # ic.configureOutput(includeContext=True, contextAbsPath=True)
 
 
-async def keys2text(request: Request, client, ui, user_session, user_settings) -> None:
+@ui.page('/', response_timeout=999)
+async def home(request: Request, client: Client):
+	# async def keys2text(request: Request, client, ui, user_session, user_settings) -> None:
+
+	user_session = UserSession()
+	user_session.client_ip = client.ip
+	user_settings = UserSettings()
+
 	ui.add_body_html('''
 	<script>
-		async function listModels(url, apiKey) {
-			try {
-				console.log(`${url}`);
-				console.log(apiKey);
-				const response = await fetch(`${url}`, {
-					method: 'GET',
-					headers: {
-						'Authorization': `Bearer ${apiKey}`,
-						'Content-Type': 'application/json'
-					}
-				});
-
-				if (!response.ok) {
-					// this isn't really an error, as Ollama or LM Studio may
-					// not be available on the user's computer; so ignore it:
-					// console.error(`Error: ${response.status} - ${response.statusText}`);
-					return null;
-				}
-
-				const models = await response.json();
-				console.log(models);
-				return models;
-			} catch (error) {
-				// console.error("Failed to fetch models:", error);
-				return null;
-			}
-		}
-
-
-		// handle Ollama and LMStudio weirdness:
-		async function localStreamChat(websocketName, url, apiKey, model, prompt) {
-			let chunks_socket;
-			let retries = 0;
-			const maxRetries = 1;
-			const retryDelay = 300;
-			const requestBody = {
-				messages: [{ role: 'user', content: prompt }],
-				model: model,
-				stream: true
-			};
-
-			const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			const host = window.location.host;
-			const wsUrl = `${protocol}//${host}${websocketName}`;
-			console.log('Connecting to:', wsUrl);
-
-			function connect() {
-				chunks_socket = new WebSocket(wsUrl);
-				
-				chunks_socket.onopen = () => { 
-					console.log('WebSocket connected');
-					retries = 0;
-				};
-
-				chunks_socket.onclose = (event) => {
-					console.log('WebSocket closed:', event.code, event.reason);
-					if (retries < maxRetries && event.code !== 1000) {
-						retries++;
-						console.log('Retrying connection, attempt:', retries);
-						setTimeout(connect, retryDelay);
-					}
-				};
-
-				chunks_socket.onerror = (error) => {
-					console.log('WebSocket error:', error);
-					if (retries < maxRetries) {
-						retries++;
-						console.log('Retrying after error, attempt:', retries);
-						setTimeout(connect, retryDelay);
-					}
-				};
-
-				return new Promise((resolve) => {
-					chunks_socket.addEventListener('open', () => resolve(chunks_socket));
-				});
-			}
-
-			function sendMessageWithRetry(ws, message, maxAttempts = 3) {
-				let attempts = 0;
-				const tryToSend = () => {
-					if (ws && ws.readyState === WebSocket.OPEN) {
-						ws.send(JSON.stringify({ message }));
-						return true;
-					} else if (attempts < maxAttempts) {
-						attempts++;
-						setTimeout(tryToSend, 100);
-						return false;
-					}
-					console.error('Failed to send after', maxAttempts, 'attempts');
-					return false;
-				};
-				return tryToSend();
-			}
-
-			await connect();
-
-			try {
-				const response = await fetch(url, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'Authorization': 'Bearer ' + apiKey
-					},
-					body: JSON.stringify(requestBody)
-				});
-
-				if (!response.ok) {
-					if (chunks_socket && chunks_socket.readyState === WebSocket.OPEN) {
-						chunks_socket.send(JSON.stringify({ message: `HTTP error! Status: ${response.status}` }));
-					}
-					return;
-				}
-
-				const reader = response.body.getReader();
-				const decoder = new TextDecoder();
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) {
-						if (chunks_socket && chunks_socket.readyState === WebSocket.OPEN) {
-							chunks_socket.send(JSON.stringify({ message: '<<FIN_LOCAL>>' }));
-						}
-						break;
-					}
-
-					const chunk = decoder.decode(value);
-					const lines = chunk.split('\\n');
-
-					for (const line of lines) {
-						if (line.startsWith('data: ')) {
-							try {
-								const jsonStr = line.slice(6).trim();
-								if (jsonStr && jsonStr !== '[DONE]') {
-									const parsedData = JSON.parse(jsonStr);
-									if (parsedData.choices && 
-										parsedData.choices[0].delta && 
-										parsedData.choices[0].delta.content) {
-										sendMessageWithRetry(chunks_socket, parsedData.choices[0].delta.content);
-									}
-								}
-							} catch (parseError) {
-								console.error('Parse error:', parseError);
-								if (chunks_socket && chunks_socket.readyState === WebSocket.OPEN) {
-									chunks_socket.send(JSON.stringify({ message: `Parse error: ${parseError.message}` }));
-								}
-							}
-						}
-					}
-				}
-				
-				console.log('Stream complete, closing connection');
-				if (chunks_socket && chunks_socket.readyState === WebSocket.OPEN) {
-					chunks_socket.close(1000, "Normal Closure");
-				}
-
-			} catch (error) {
-				console.error('Stream error:', error);
-				if (chunks_socket && chunks_socket.readyState === WebSocket.OPEN) {
-					chunks_socket.send(JSON.stringify({ message: `Stream error: ${error.message}` }));
-					chunks_socket.close(1000, "Normal Closure");
-				}
-			}
-		}
-
 		function copyToClipboard(meId, aiId) {
 			const meElement = document.getElementById(`c${meId}`);
 			const aiElement = document.getElementById(`c${aiId}`);
@@ -242,15 +75,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 	</script>
 	''')
 
-	# claude's:
-	# const filtered_lines = text.split('\n')
-	# .filter(line => line.replace(/\*\*|##|###/g, '').trim() !== 'content_paste')
-	# .map(line => {
-	#   const cleaned = line.replace(/\*\*|##|###/g, '').trim();
-	#   return (cleaned === 'AI:' ? '\n' + cleaned : cleaned);
-	# });
-	# clip_text = filtered_lines.join('\n') + '\n';
-
 
 	def remove_markdown(content: str) -> str:
 		content = re.sub(r'\*\*(.*?)\*\*', r'\1', content)  # Bold: **text**
@@ -263,31 +87,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', content)  # Links: [text](url)
 		content = re.sub(r'^\s*[-\*]\s+', '', content, flags=re.MULTILINE)  # Bulleted lists: - text or * text
 		return content
-
-	# *************************************************
-	# handle local llm responses, Ollama and LM Studio:
-	# *************************************************
-
-	# async for chunk in run_streamer(user_session.provider, user_session.chat_history):
-	#   await ui.context.client.connected() # necessary?
-	#   user_session.response_message.clear() # cleared for each chunk = why?
-	#   with user_session.response_message:
-	#       user_session.chunks += "" if chunk is None else chunk
-	#       ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
-	#   # show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
-	#   end_time = time.time()
-	#   elapsed_time = end_time - user_session.start_time
-	#   minutes, seconds = divmod(elapsed_time, 60)
-	#   end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
-	#   user_session.response_message.props(f'stamp="{end_time_date}"')
-	#   user_session.response_message.update()
-	#   try:
-	#       await ui.context.client.connected() # necessary?
-	#       await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
-	#   except Exception as e:
-	#       user_session.thinking_label.set_visibility(False)
-	#       user_session.send_button.set_enabled(True)
-
 
 	async def update_response_message_container(content: str):
 		# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
@@ -327,37 +126,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			pass
 
 
-	# unique websocket name per user, "don't cross those streams!"", 
-	# and this is only for users that are running: Ollama or LM Studio:
-	@app.websocket(user_settings.websocket_name)
-	async def websocket_endpoint(websocket: WebSocket):
-		try:
-			await websocket.accept()
-			while True:
-				data = await websocket.receive_text()
-				parsed_data = json.loads(data)
-				message = parsed_data.get('message') or parsed_data.get('messages', [{}])[0].get('content')
-				if message:
-					await update_response_message_container(message)
-		except WebSocketDisconnect as e:
-			print(f"websocket_endpoint: javascript streamer disconnected with code: {e.code}, reason: {e.reason}")
-			print(e)
-			pass
-		except Exception as e:
-			print(e)
-			pass
-		finally:
-			try:
-				# usually this is already closed, but just in case:
-				await websocket.close()
-			except Exception as e:
-				pass
-
-	# *************************************************
-	# handle local llm responses, Ollama and LM Studio.
-	# *************************************************
-
-
 	def set_abort(value):
 		user_session.abort = value
 
@@ -369,61 +137,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		except Exception:
 			return default
 
-	# ***************************************************
-	# ALL backend API stuff: model listers and streamers:
-	# ***************************************************
-
-	# **********************
-	# provider model listers:
-	# **********************
-
-	async def app_models():
-		user_settings.provider_models["Keys2Text"] = [
-			"Insert a Note",
-			"Vitals",
-			"ReadMe",
-		]
-		return len(user_settings.provider_models["Keys2Text"])
-
-	async def duckduckgo_models():
-		user_settings.provider_models["DuckDuckGo"] = [
-			"gpt-4o-mini",
-			"claude-3-haiku-20240307",
-			"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-			"mistralai/Mixtral-8x7B-Instruct-v0.1",
-		]
-		return len(user_settings.provider_models["DuckDuckGo"])
-
-	async def anthropic_models():
-		pm = "Anthropic"
-		provider_api_key = user_settings.get_provider_setting(pm, 'api_key')
-		if provider_api_key is None or provider_api_key.strip() == "":
-			user_session.providers.remove(pm) if pm in user_session.providers else None
-			return 0
-		# # hardcoded coz they don't provide a 'list models' endpoint <= WHY?
-		# user_settings.provider_models["Anthropic"] = [
-		# 	"claude-3-5-haiku-20241022",
-		# 	"claude-3-5-sonnet-20241022",
-		# 	"claude-3-5-sonnet-20240620",
-		# 	"claude-3-haiku-20240307",
-		# 	"claude-3-opus-20240229",
-		# 	"claude-3-sonnet-20240229",
-		# ]
-		# return len(user_settings.provider_models["Anthropic"])
-		# Dec 2024: they added a list models endpoint:
-		client = anthropic.Anthropic(
-			api_key=provider_api_key,
-			max_retries=0,
-		)
-		models = client.models.list(limit=1000) # default=20
-		model_ids = [model.id for model in models.data]
-		sorted_models = sorted(model_ids)
-		user_settings.provider_models[pm] = sorted_models
-		return len(user_settings.provider_models[pm])
-
-	# **********************************
-	# model streamers for each provider:
-	# **********************************
 
 	async def AnthropicResponseStreamer(prompt):
 		if user_session.model is None: yield ""; return # sometimes model list is empty
@@ -462,85 +175,10 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			print(e)
 			yield f"Error:\nAnthropic's response for model: {user_session.model}\n{e}"
 
-	# **********************************
-	# end of backend provider API stuff.
-	# **********************************
-
-	async def Keys2TextResponseStreamer(prompt):
-		if user_session.model is None: yield ""; return # sometimes model list is empty
-		if user_session.model == "Vitals":
-			try:
-				uvv = version('uvicorn')
-			except PackageNotFoundError:
-				uvv = 'unknown'
-			try:
-				fav = version('fastapi')
-			except PackageNotFoundError:
-				fav = 'unknown'
-			user_session.total_models = sum(len(models) for models in user_settings.provider_models.values())
-			# ignore the chat app's pretend ai/llm stuff:
-			total_ai_providers = len(user_session.providers) - 1
-			ignored = len(user_settings.provider_models["Keys2Text"])
-			total_ai_models = user_session.total_models - ignored
-			yield f"Platform: {platform.system()}\n"
-			# yield f"Server listening at:\n"
-			# for url in app.urls:
-			#   yield f"\t{url}\n"
-			yield f"Session ID: {user_session.session_id.get('id')}\n"
-			yield f"\nKeys2Text chat personal server info:\n"
-			yield f"\tYour connection IP: {ui.context.client.ip}\n"
-			yield f"\n*** AI Providers and their LLM Models ***\n"
-			yield f"In total there are {total_ai_models} models available from {total_ai_providers} providers.\n"
-			for index, provider in enumerate(user_session.providers, start=0):
-				if provider == "Keys2Text":
-					continue
-				models = user_settings.provider_models.get(provider, [])
-				model_count = len(models)
-				yield f"\n(#{index}). {provider}  models: {model_count} ...\n"
-				for m, model in enumerate(models, start=1):
-					yield f"{m}. {model}\n"
-			pvi = sys.version_info
-			python_version = f"{pvi.major}.{pvi.minor}.{pvi.micro}"
-			nicegui_version = nv
-			anthropic_version = av
-			genai_version = ggv
-			groq_version = gv
-			openai_version = oav
-			yield f"\n\n--- Software Versions ---\n"
-			yield f"Keys2Text: {user_session.app_version}\n"
-			yield f"Python: {python_version}\n"
-			yield f"NiceGUI: {nicegui_version}\n"
-			yield f"FastAPI: {fav}\n"
-			yield f"Uvicorn: {uvv}\n"
-			yield f"\n--- AI Provider's SDK versions ---\n"
-			yield f"1. Anthropic: {anthropic_version}\n"
-			yield f"\t<small><a href=\"https://docs.anthropic.com/en/api/getting-started\" target=\"_blank\" style=\"color:green; TEXT-DECORATION: underline;\" title=\"see website\">https://docs.anthropic.com/en/api/getting-started</a></small>\n"
-			yield f" \n"
-			yield f" \n"
-		else:
-			yield f"The following are wishes for all of the AI chatters in the universe:\n\n"
-			yield f"- maintain a simple plain text chat history file, for both human and AI\n"
-			yield f"- denote the ME: and the AI: in their chat history (ok, most of them do this already)\n"
-			yield f"- denote which Provider and Model are being used, so we know who/what we chatted with\n"
-			yield f"- timestamp the chat with a human readable date and time\n"
-			yield f"- allow us to 'Insert a Note' along with a timestamp into the chat history\n"
-			yield f"- were easy and fast to scroll chat history: ⬇ (to the bottom) and ⬆ (to the top)\n"
-			yield f"- could CLEAR to forget and start a new chat (ok, most do this already)\n"
-			yield f"- could COPY an entire chat to the clipboard\n"
-			yield f"- could SAVE an entire chat as a plain text file; DuckDuckGo AI is the only I have found to do this\n"
-			yield f"- would allow us to use our cursor/pointer to select text in this box to copy/paste just what you need  (ok, most of them do this already)\n"
-			yield f"- would remove those '**' (Markdown), this app removes most of the Markdown\n"
-			yield f"- could continue the same chat across several AI models\n"
-			yield f"- used NiceGUI and worked in many web browsers\n"
-			yield f" \n"
-			yield f"Enjoy! ☮️\n"
-			yield f"p.s. click on CLEAR button above to get rid of this, I await your return! 🙉\n"
-			yield f" \n"
 
 	# map the PROVIDERS to their corresponding streamer, so
 	# the 'async def' for each must be defined before here.
 	STREAMER_MAP = {
-		"Keys2Text": Keys2TextResponseStreamer,
 		"Anthropic": AnthropicResponseStreamer,
 	}
 
@@ -556,40 +194,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 				return  # exit the generator cleanly?
 			yield chunk
 
-	def append_splash_text(model_log, providers_models, new_text: str):
-		providers_models.append(new_text)
-		model_log.set_content('<br>'.join(providers_models))
-
-	async def make_a_splash():
-		with ui.dialog() as splash_popup:
-			splash_popup.props("persistent")
-			splash_popup.classes("blur(4px)")
-			with splash_popup, ui.card().classes("w-96"):
-				ui.image("https://www.slipthetrap.com/images/Aidetour_bw.png").classes("w-64 h-64 mx-auto")
-				ui.label("Welcome to Keys2Text!").classes("text-2xl font-bold text-center mt-2")
-				for url in app.urls:
-					ui.link(url, target=url)
-				with ui.row().classes("justify-center mt-2"):
-					ui.spinner('grid', size='sm')
-					ui.label("Please standby . . .").classes("text-red text-sm text-center mt-2 ml-2")
-				model_log = ui.html().classes("text-sm mt-2").style('white-space: pre-wrap')
-				providers_models = []
-		splash_popup.open()
-		return splash_popup, model_log, providers_models
-
-
-	async def fetch_vqd():
-		url = "https://duckduckgo.com/duckchat/v1/status"
-		headers = {
-			"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-			"x-vqd-accept": "1"
-		}
-		async with httpx.AsyncClient() as client:
-			response = await client.get(url, headers=headers)
-			if response.status_code == 200:
-				return response.headers.get("x-vqd-4")
-			else:
-				raise Exception(f"fetch_vqd: Failed to initialize chat: {response.status_code} {response.text}")
 
 	# **********************
 	# start ui via nicgui:
@@ -602,31 +206,8 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 	darkness_value = user_settings.darkness if user_settings.darkness is not None else True
 	darkness.set_value(darkness_value)
 
-	user_session.splash_dialog, model_log, providers_models = await make_a_splash()
-	model_count = await app_models()
-
-	user_session.provider = "Keys2Text"
-	user_session.model = user_settings.provider_models.get(user_session.provider, ['Keys2Text'])[0]
-
-	# let's try to give users access to the free LLM models on DuckDuckGo AI, 
-	# we 'try' coz there's no official DuckDuckGo AI API and this may 
-	# stop working ... but it's nice for app demos:
-	try:
-		user_session.duckduckgo_vqd = await fetch_vqd()
-		# print(f"vqd={user_session.duckduckgo_vqd}")
-	except Exception as e:
-		print(e)
-
-	def update_model_choices():
-		selected_provider = user_session.ui_select_provider.value
-		available_models = user_settings.provider_models.get(selected_provider, [])
-		user_session.ui_select_model.options = available_models
-		user_session.ui_select_model.value = available_models[0] if available_models else ''
-		user_session.ui_select_model.update()
-
-	def clear_temp(e):
-		user_session.ui_knob_temp.value = None
-		user_session.ui_knob_temp.update()  # refresh the UI to reflect changes
+	user_session.provider = "Anthropic"
+	user_session.model = user_settings.provider_models.get(user_session.provider, ['claude-3-7-sonnet-20250219'])[0]
 
 	async def windowInnerHeight():
 		window_innerHeight = await ui.run_javascript(f"window.innerHeight")
@@ -704,14 +285,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		except Exception as e:
 			ui.notify(f"Error downloading chat history file: {filename}:\n{e}", position="top")
 
-	# def clean_text_for_ai(text):
-	#     # remove non-printable and control characters but keep spaces, tabs, and newlines
-	#     cleaned_text = ''.join(
-	#         char for char in text 
-	#         if char.isprintable() or char in ('\n', '\r', '\t')
-	#     )
-	#     return cleaned_text
-
 	def escape_js_string(text):
 		"""escape a Python string for safe inclusion in JavaScript code."""
 		return json.dumps(text)  # automatically escapes quotes, backslashes, newlines, etc.
@@ -721,14 +294,11 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		prompt_sent = bool(user_prompt.value and user_prompt.value.strip())
 		user_session.provider = user_session.ui_select_provider.value
 		user_session.model = user_session.ui_select_model.value
-		if user_session.provider == 'Keys2Text':
+		if user_session.provider == 'Anthropic':
 			pass
 		elif not prompt_sent:
 			ui.notify("Prompt is empty, please type something.", position="top", timeout=2000)
 			return
-		if user_session.provider == 'Keys2Text':
-			# never put: Insert a Note, Vitals, ReadMe into the chat history
-			pass
 		else:
 			user_session.chat_history += user_prompt.value + " \n"
 		question = user_prompt.value
@@ -748,12 +318,7 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			me_message = ui.chat_message(sent=True, stamp=timestamp)
 			me_message.clear()
 			with me_message:
-				if user_session.provider == 'Keys2Text' and user_session.model == 'Insert a Note':
-					ui.html(f"<pre style='white-space: pre-wrap;'>\nKeys2Text:   [{user_session.model}]:\n{question}</pre>")
-				elif user_session.provider == 'Keys2Text':
-					pass
-				else:
-					ui.html(f"<pre style='white-space: pre-wrap;'>ME:   {user_session.provider} - {user_session.model} - temp: {user_session.ui_knob_temp.value}\n{question}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'>ME:   {user_session.provider} - {user_session.model} - temp: {user_session.ui_knob_temp.value}\n{question}</pre>")
 
 			user_session.response_message = ui.chat_message(sent=False, stamp=timestamp)
 
@@ -766,41 +331,34 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		except Exception as e:
 			pass # no biggie, if can't scroll then user can do it manually
 
-		if user_session.provider == 'Keys2Text' and user_session.model == 'Insert a Note':
-			# just 'Insert a Note' in as 'ME:' and no need to stream it
-			await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
-			user_session.thinking_label.set_visibility(False)
-			user_session.send_button.set_enabled(True)
-			user_session.abort_stream.set_visibility(False)
-		else:
-			async for chunk in run_streamer(user_session.provider, user_session.chat_history):
-				if user_session.abort:
-					set_abort(False)
-					break
+		async for chunk in run_streamer(user_session.provider, user_session.chat_history):
+			if user_session.abort:
+				set_abort(False)
+				break
+			await ui.context.client.connected() # necessary?
+			user_session.response_message.clear() # cleared for each chunk = why?
+			with user_session.response_message:
+				user_session.chunks += "" if chunk is None else chunk
+				if user_session.provider == 'Keys2Text':
+					ui.html(f"<pre style='white-space: pre-wrap;'><br>Keys2Text:   [{user_session.model}]  {timestamp}:\n{user_session.chunks}</pre>")
+				else:
+					ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
+			
+			# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
+			end_time = time.time()
+			elapsed_time = end_time - user_session.start_time
+			minutes, seconds = divmod(elapsed_time, 60)
+			end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
+			if user_session.provider == 'DuckDuckGo':
+				end_time_date += f" - DuckDuckGo models are not streamed, so they have slower responses."
+			user_session.response_message.props(f'stamp="{end_time_date}"')
+			user_session.response_message.update()
+			try:
 				await ui.context.client.connected() # necessary?
-				user_session.response_message.clear() # cleared for each chunk = why?
-				with user_session.response_message:
-					user_session.chunks += "" if chunk is None else chunk
-					if user_session.provider == 'Keys2Text':
-						ui.html(f"<pre style='white-space: pre-wrap;'><br>Keys2Text:   [{user_session.model}]  {timestamp}:\n{user_session.chunks}</pre>")
-					else:
-						ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
-				
-				# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
-				end_time = time.time()
-				elapsed_time = end_time - user_session.start_time
-				minutes, seconds = divmod(elapsed_time, 60)
-				end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
-				if user_session.provider == 'DuckDuckGo':
-					end_time_date += f" - DuckDuckGo models are not streamed, so they have slower responses."
-				user_session.response_message.props(f'stamp="{end_time_date}"')
-				user_session.response_message.update()
-				try:
-					await ui.context.client.connected() # necessary?
-					await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
-				except Exception as e:
-					user_session.thinking_label.set_visibility(False)
-					user_session.send_button.set_enabled(True)
+				await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
+			except Exception as e:
+				user_session.thinking_label.set_visibility(False)
+				user_session.send_button.set_enabled(True)
 
 			user_session.thinking_label.set_visibility(False)
 			user_session.send_button.set_enabled(True)
@@ -906,102 +464,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 
 	with ui.header().classes('bg-transparent text-gray-800 dark:text-gray-200 z-10 mt-0').style('margin-top: 0; padding-top: 0;'):
 
-		with ui.row().classes("w-full no-wrap mb-0 mt-5 ml-0").style('min-width: 100%; margin-left: 0; justify-content: left;'):
-
-			# allow case sensitivity in ui.select:
-			ui.add_head_html(
-				"<style> .prevent-uppercase { text-transform: none !important; } </style>"
-			)
-			with ui.avatar(color=None, square=False, rounded=True, size='lg').classes("mt-3"):
-				image_url = user_settings.google_picture
-				try:
-					response = httpx.get(image_url, timeout=2)
-					image_url = user_settings.google_picture if response.status_code == 200 else 'https://www.slipthetrap.com/images/Aidetour_bw.png'
-				except Exception as e:
-					image_url = 'https://www.slipthetrap.com/images/Aidetour_bw.png'
-				ui.image(image_url)
-
-				signin_time = user_settings.signin_time
-				with ui.tooltip().classes('flex items-center justify-center w-auto h-auto p-5'):
-					with ui.element().classes('flex flex-col items-center justify-center p-5'):
-						ui.image('https://www.slipthetrap.com/images/Aidetour_bw.png').classes('w-56')
-						ui.html(
-						  "<p style='font-size:20px'><b>Keys2Text</p>"
-						  f"<p style='font-size:12px'><b>version: {user_session.app_version}</b></p>"
-						  f"<p style='font-size:12px'><b>last Google sign in:<br>{datetime.utcfromtimestamp(signin_time).strftime('%Y-%m-%d %H:%M:%S')}</b></p><br>"
-						  f"<p style='font-size:10px; text-align: left;'><i>The 8 providers offered:<br>"
-						  f"{user_settings.eight_providers}</i></p>"
-						).classes("text-center p-3").style(f"background-color: {user_settings.current_primary_color};")
-						ui.separator().classes("mt-2 mb-2")
-						with ui.row().classes('w-full items-center'):
-							if user_settings.google_picture:
-								with ui.avatar(rounded=True).style('background-color: transparent !important;'):
-									ui.image(user_settings.google_picture)
-							with ui.column().classes('ml-4 flex-grow'):
-								# ui.label(user_settings.users_google_sub).classes('text-xl font-bold')
-								ui.label(f"{user_settings.google_given_name} {user_settings.google_family_name}").classes('text-xl font-bold mb-0')
-								with ui.row().classes('mt-0'):
-									ui.label(user_settings.google_email).classes('text-sm')
-									if user_settings.google_email_verified:
-										ui.label("✓ verified").classes('text-green-600')
-									else:
-										ui.label("✗ not verified").classes('text-red-600')
-
-			with ui.column().classes("flex-1 w-1/3 p-0 ml-0").style('transform: scale(0.85);'):
-				user_session.ui_select_provider = (
-					ui.select(
-						user_session.providers,
-						# label=f"? Providers:",
-						label=f"Providers:",
-						value=user_session.provider,
-						on_change=lambda e: update_model_choices(),
-					)
-					.classes("prevent-uppercase w-40")
-				)
-
-			with ui.column().classes("flex-1 w-1/3 p-0").style('transform: scale(0.85);'):
-				# user can type to search/select, like for the word 'free':
-				user_session.ui_select_model = (
-					ui.select(
-						value=user_session.model,
-						label="Models:",
-						options=user_settings.provider_models[user_session.provider], 
-						with_input=True,
-					)
-					.props("clearable")
-					.props("spellcheck=false")
-					.props("autocomplete=off")
-					.props("autocorrect=off")
-				)
-
-			# user_settings.ui_select_provider.on_value_change(
-			#   lambda e: user_settings.ui_select_model.props(
-			#       f'label="{len(user_settings.provider_models.get(user_settings.provider))} Models:"' if user_settings.provider_models.get(user_settings.provider) else 'label="No Models Available"'
-			#   ) if e.value != "Keys2Text" else user_settings.ui_select_model.props('label="Models:"')
-			# )
-
-			with ui.column().classes("flex-1 w-1/3 p-0 ml-3").style('transform: scale(0.85);'):
-				# use gap-0 to make button/knob closer together:
-				with ui.row().classes("mb-0 mt-0 ml-6 gap-0 items-center"):
-					user_session.ui_button_temp = ui.button(
-						icon='dew_point', #'device_thermostat',
-						on_click=lambda e: clear_temp(None)
-					) \
-					.tooltip("clear/reset Temp") \
-					.props('no-caps flat round')
-
-					user_session.ui_knob_temp = ui.knob(
-						None,
-						min=None,
-						max=2,
-						step=0.1,
-						show_value=True, 
-						color=user_settings.current_primary_color,
-						track_color='blue-grey-7',
-						size='xl'
-					) \
-					.tooltip("Temperature")
-
 		with ui.row().classes("w-full mb-0 mt-0 ml-0"):
 
 			with ui.column().classes("flex-none p-0"):
@@ -1030,6 +492,7 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			user_session.send_button.set_enabled(False)
 			user_session.send_button.set_enabled(True)
 
+
 			with ui.column().classes("flex-grow p-0"):
 				user_prompt = (
 					ui.textarea(label="Prompt:", placeholder=f"Enter your prompt here...")
@@ -1041,6 +504,7 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 					.props("autocorrect=off")
 					.props("tabindex=0")
 				)
+
 
 		with ui.row().classes("w-full mb-0.1 space-x-0"):
 			# https://fonts.google.com/icons?icon.query=clip&icon.size=24&icon.color=%23e8eaed
@@ -1133,13 +597,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			.tooltip("Reload app") \
 			.props('no-caps flat fab-mini')
 
-			ui.button(
-				icon='logout',
-				on_click=lambda: ui.navigate.to('/google/logout')
-			) \
-			.tooltip("Logout") \
-			.props('no-caps flat fab-mini')
-
 
 			# this only appears during long streaming responses:
 			user_session.abort_stream = ui.button(
@@ -1164,33 +621,6 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 			.style(f'height: {wih}px; font-size: 15px !important; white-space: pre-wrap;') 
 		)
 		ui.separator().props("size=4px color=primary")  # insinuate bottom of chat history
-		
-
-	def check_splashed_and_providers():
-		if user_session.splashed:
-			if len(user_session.providers) - 1 <= 0:
-				ui.html('<style>.multi-line-notification { white-space: pre-line; }</style>')
-				ui.notification(
-					'*** No AI providers are available! *** \n'
-					'Please click on Chat Settings to add/change AI provider \n'
-					'API keys, or if you are using Ollama or LM Studio  \n'
-					'ensure both/either are up before starting this app. \n'
-					"'Chat Settings' is the gear icon in the button bar below.",
-					multi_line=True,
-					classes='multi-line-notification',
-					type='negative', 
-					close_button="⬇️ click red gear to fix",
-					position='top',
-					timeout=0 # wait for user to click close_button
-				)
-				chat_settings.props('color=negative')
-				chat_settings.tooltip('Chat 😱 Settings')
-				chat_settings.update()  # refresh the UI to reflect changes
-
-			splash_timer.cancel()
-
-	# await asyncio.sleep(3)
-	splash_timer = ui.timer(2, check_splashed_and_providers)
 
 
 	async def chat_settings_dialog():
@@ -1312,152 +742,13 @@ async def keys2text(request: Request, client, ui, user_session, user_settings) -
 		settings_popup.open()
 
 
-	# *******************************************************
-	# after doing: session, settings, ui; but before splash, 
-	# try to get the local (ollama / lmstudio) models if any:
-	# *******************************************************
-
-	# note: because the:
-	#   ui.run_javascript(f'listModels ...
-	# was being run inside of all of this:
-	#   model_count = await ollama_models()
-	#   append_splash_text(model_log, providers_models, f"\tOllama offers {omodels_count} models.")
-	#   def sync_handle_models_list():
-	#       asyncio.run(handle_models_list())
-	# ... often the following error happened:
-	#   IndexError: pop from empty list
-	# ... which has something to do with nicegui's containers and slots,
-	# and the same happened for LMStudio,
-	# so while this code is messy and redundant, it works, so far:
-	pm = "Ollama"
-	omodels = None
-	omodels_count = 0
-	try:
-		provider_api_key = user_settings.get_provider_setting(pm, 'api_key')
-		if not provider_api_key or provider_api_key.strip() == "":
-			if user_session.providers and pm in user_session.providers:
-				provider_api_key = 'ollama' # no api_key is required, so force it
-				# user_session.providers.remove(pm)
-		provider_base_url = user_settings.get_provider_setting(pm, 'base_url')
-		if not provider_base_url or provider_base_url.strip() == "":
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-		try:
-			provider_base_url = provider_base_url.removesuffix("/")
-			models_url = f"{provider_base_url}{user_session.openai_compat_models_endpoint}"
-			omodels = await ui.run_javascript(
-				f'listModels("{models_url}", "{provider_api_key}")', 
-				timeout=2.0
-			)
-		except Exception as e:
-			print(f"Error fetching Ollama models: {e}")
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-		# validate and process omodels if any:
-		if isinstance(omodels, dict):
-			if 'data' in omodels and isinstance(omodels['data'], list):
-				chat_omodels = [model['id'] for model in omodels['data'] if isinstance(model, dict) and 'id' in model]
-				user_settings.provider_models[pm] = chat_omodels
-				omodels_count = len(chat_omodels)
-			else:
-				if user_session.providers and pm in user_session.providers:
-					user_session.providers.remove(pm)
-		else:
-			# print(f"Ollama models is not a dict: {type(omodels)}")
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-	except Exception as e:
-		print(f"Error while fetching Ollama models: {e}")
-		if user_session.providers and pm in user_session.providers:
-			user_session.providers.remove(pm)
-
-	pm = "LMStudio"
-	lmsmodels = None
-	lmsmodels_count = 0
-	try:
-		provider_api_key = user_settings.get_provider_setting(pm, 'api_key')
-		if not provider_api_key or provider_api_key.strip() == "":
-			if user_session.providers and pm in user_session.providers:
-				provider_api_key = 'lmstudio' # no api_key is required, so force it
-				# user_session.providers.remove(pm)
-		provider_base_url = user_settings.get_provider_setting(pm, 'base_url')
-		if not provider_base_url or provider_base_url.strip() == "":
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-		try:
-			provider_base_url = provider_base_url.removesuffix("/")
-			models_url = f"{provider_base_url}{user_session.openai_compat_models_endpoint}"
-			lmsmodels = await ui.run_javascript(
-				f'listModels("{models_url}", "{provider_api_key}")', 
-				timeout=2.0
-			)
-		except Exception as e:
-			print(f"Error fetching LMStudio models: {e}")
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-		# validate and process lmsmodels if any:
-		if isinstance(lmsmodels, dict):
-			if 'data' in lmsmodels and isinstance(lmsmodels['data'], list):
-				chat_lmsmodels = [model['id'] for model in lmsmodels['data'] if isinstance(model, dict) and 'id' in model]
-				user_settings.provider_models[pm] = chat_lmsmodels
-				lmsmodels_count = len(chat_lmsmodels)
-			else:
-				if user_session.providers and pm in user_session.providers:
-					user_session.providers.remove(pm)
-		else:
-			# print(f"LMStudio models is not a dict: {type(lmsmodels)}")
-			if user_session.providers and pm in user_session.providers:
-				user_session.providers.remove(pm)
-	except Exception as e:
-		print(f"Error while fetching LMStudio models: {e}")
-		if user_session.providers and pm in user_session.providers:
-			user_session.providers.remove(pm)
+def main():
+	ui.run(
+		title="spud",
+		reload=False,
+		dark=True,
+	)
 
 
-	async def handle_models_list():
-		append_splash_text(model_log, providers_models, f'Gathering AI models for each provider . . .')
-		append_splash_text(model_log, providers_models, f"* Providers that require an API key:")
-		model_count = await anthropic_models()
-		append_splash_text(model_log, providers_models, f"\tAnthropic offers {model_count} models.")
-		model_count = await google_models()
-		append_splash_text(model_log, providers_models, f"\tGoogle AI Studio offers {model_count} models.")
-		model_count = await groq_models()
-		append_splash_text(model_log, providers_models, f"\tGroq offers {model_count} models.")
-		model_count = await openai_models()
-		append_splash_text(model_log, providers_models, f"\tOpenAI offers {model_count} models.")
-		model_count = await openrouter_models()
-		append_splash_text(model_log, providers_models, f"\tOpenRouter offers {model_count} models.")
-
-		append_splash_text(model_log, providers_models, f"\n* Without API key and/or local models:")
-		model_count = await duckduckgo_models()
-		append_splash_text(model_log, providers_models, f"\tDuckDuckGo offers {model_count} models.")
-		append_splash_text(model_log, providers_models, f"\tLM Studio offers {lmsmodels_count} models.")
-		append_splash_text(model_log, providers_models, f"\tOllama offers {omodels_count} models.")
-
-	def sync_handle_models_list():
-		asyncio.run(handle_models_list())
-
-	if not user_session.splashed:
-		await asyncio.sleep(1.0)
-		# seems to fix the sometimes long/varying response times from providers:
-		await run.io_bound(sync_handle_models_list)
-
-		user_session.total_models = sum(len(models) for models in user_settings.provider_models.values())
-		# ignore this app's pretend model stuff:
-		ignored = len(user_settings.provider_models["Keys2Text"])
-		total_ai_providers = len(user_session.providers) - 1 # ignore this app's pretend provider
-		total_ai_models = user_session.total_models - ignored
-		append_splash_text(model_log, providers_models, f"\nWith {total_ai_models} models available from {total_ai_providers} providers.")
-		append_splash_text(model_log, providers_models, f"Enjoy!")
-		await asyncio.sleep(1)
-		user_session.splash_dialog.close()
-		user_session.splash_dialog.clear() # removes the hidden splash ui.dialog
-
-		user_session.ui_select_provider.options = user_session.providers  # update the options in the select element
-		# user_session.ui_select_provider.props(f'label="{len(user_session.providers) - 1} Providers:"')
-		user_session.ui_select_provider.update()  # refresh the UI to reflect changes
-
-		# because of nicegui's webserver-ness(fastapi/uvicorn); let's remember we splashed already:
-		user_session.splashed = True
-		# annoying = ui.notify("See full list of models by using Keys2Text > Vitals.", position='bottom')
-
+if __name__ in {"__main__", "__mp_main__"}:
+	main()

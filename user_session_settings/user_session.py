@@ -21,8 +21,7 @@ class UserSession:
 
 		# from this list, determine which providers are available for user's session:
 		self.providers = [
-			"Keys2Text", "Anthropic", "Google", "Groq", "LMStudio",
-			"Ollama", "OpenAI", "OpenRouter", "DuckDuckGo"
+			"Anthropic"
 		]
 
 		self.ui_page = None
@@ -45,7 +44,4 @@ class UserSession:
 		self.model = ""
 		self.ui_button_temp = None
 		self.ui_knob_temp = None
-		self.duckduckgo_vqd = None
-		self.openai_compat_models_endpoint = "/v1/models"
-		self.openai_compat_chat_endpoint = "/v1/chat/completions"
 
