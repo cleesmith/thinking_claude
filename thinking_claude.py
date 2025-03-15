@@ -32,8 +32,6 @@ from user_session_settings import UserSettings
 
 @ui.page('/', response_timeout=999)
 async def home(request: Request, client: Client):
-	# async def keys2text(request: Request, client, ui, user_session, user_settings) -> None:
-
 	user_session = UserSession()
 	user_settings = UserSettings()
 
@@ -130,44 +128,120 @@ async def home(request: Request, client: Client):
 
 
 	async def AnthropicResponseStreamer(prompt):
-		if user_session.model is None: yield ""; return # sometimes model list is empty
-		pm = "Anthropic"
-		provider_api_key = user_settings.get_provider_setting(pm, 'api_key')
-		# if provider_api_key is None or provider_api_key.strip() == "":
-		# 	yield ""; return
-		provider_timeout = user_settings.get_provider_setting(pm, 'timeout')
+		# if user_session.model is None: yield ""; return # sometimes model list is empty
+		# pm = "Anthropic"
+		# provider_timeout = user_settings.get_provider_setting(pm, 'timeout')
+
+		# # Prepare the prompt with chat history and current request
+		# prompt = ""
+		
+		# # prefix the no-markdown instruction directly to the user prompt if needed
+		# if args.no_markdown:
+		#     prompt = "Never respond with Markdown formatting, plain text only.\n\n"
+			
+		# if current_chat_history:
+		#     prompt += current_chat_history
+		#     if not prompt.endswith("\n\n"):
+		#         prompt += "\n\n"
+		
+		# Add the current input to the prompt
+		prompt += f"ME: {prompt}"
+
+		# Calculate a safe max_tokens value
+		estimated_input_tokens = int(len(prompt) // 4)  # conservative estimate
+		total_estimated_input_tokens = estimated_input_tokens
+
+		max_safe_tokens = max(5000, 204648 - total_estimated_input_tokens - 2000)  # 2000 token buffer for safety
+		# Use the minimum of the requested max_tokens and what we calculated as safe:
+		max_tokens = int(min(12000, max_safe_tokens))
+
+		# Ensure max_tokens is always greater than thinking budget
+		if max_tokens <= 32000:
+			max_tokens = 32000 + 12000
+
+		# Prepare messages list - simple user message with prefixed instruction
+		messages = [{"role": "user", "content": prompt}]
+
+		full_response = ""
+		thinking_content = ""
+
+		start_time = time.time()
+
+		dt = datetime.fromtimestamp(start_time)
+		formatted_time = dt.strftime("%A %B %d, %Y %I:%M:%S %p").replace(" 0", " ").lower()
+		yield(f"****************************************************************************")
+		yield(f"*  sending to API at: {formatted_time}")
+		yield(f"*  ... standby, as this usually takes a few minutes")
+		yield(f"*  ... press CTRL+C at any time to interrupt and exit")
+		yield(f"****************************************************************************")
+
 		try:
+			# client = anthropic.Anthropic(
+			#   # api_key= # see: ~/.zshrc or os environ export's or ~/.config/
+			#   timeout=provider_timeout,
+			#   max_retries=0,
+			# )
+			# params = {
+			#   "messages": [{"role": "user", "content": prompt}],
+			#   "model": user_session.model,
+			#   "max_tokens": user_settings.get_provider_setting('Anthropic', 'max_tokens'),
+			#   }
+			# with client.messages.stream(**params) as stream:
+			#   for content in stream.text_stream:
+			#       if user_session.abort:
+			#           set_abort(False)
+			#           yield f"\n... response stopped by button click."
+			#           stream.close()  # properly close the generator
+			#           break  # exit the generator cleanly
+			#       if isinstance(content, str):
+			#           cleaned_content = content.replace("**", "") # no ugly Markdown in plain text
+			#           yield cleaned_content
+			#       else:
+			#           yield "" # handle None or any unexpected type by yielding an empty string
+
 			client = anthropic.Anthropic(
-				# api_key=provider_api_key,
-				timeout=provider_timeout,
-				max_retries=0,
+			    timeout=300,
+			    max_retries=0  # default is 2
 			)
-			params = {
-				"messages": [{"role": "user", "content": prompt}],
-				"model": user_session.model,
-				"max_tokens": user_settings.get_provider_setting('Anthropic', 'max_tokens'), # error if this is missing <= why?
-				}
-			print(f"AnthropicResponseStreamer: params:\n{params}")
-			with client.messages.stream(**params) as stream:
-				for content in stream.text_stream:
-					if user_session.abort:
-						set_abort(False)
-						yield f"\n... response stopped by button click."
-						stream.close()  # properly close the generator
-						break  # exit the generator cleanly
-					if isinstance(content, str):
-						cleaned_content = content.replace("**", "") # no ugly Markdown in plain text
-						yield cleaned_content
-					else:
-						yield "" # handle None or any unexpected type by yielding an empty string
+
+			messages = [{"role": "user", "content": prompt}]
+
+			with client.beta.messages.stream(
+				model="claude-3-7-sonnet-20250219",
+				max_tokens=max_tokens,
+				messages=messages,
+				thinking={
+					"type": "enabled",
+					"budget_tokens": 32000
+				},
+				betas=["output-128k-2025-02-19"]
+			) as stream:
+				# track both thinking and text output
+				for event in stream:
+					# # check if an interrupt was requested
+					# if exit_requested:
+					#     print("\nInterrupting API request as requested...")
+					#     break
+
+					if event.type == "content_block_delta":
+						if event.delta.type == "thinking_delta":
+							thinking_content += event.delta.thinking
+							cleaned_content = event.delta.thinking.replace("**", "") # no ugly Markdown in plain text
+							yield cleaned_content
+						elif event.delta.type == "text_delta":
+							full_response += event.delta.text
+							# Display the response in real-time
+							# print(event.delta.text, end='', flush=True)
+							cleaned_content = event.delta.text.replace("**", "") # no ugly Markdown in plain text
+							yield cleaned_content
 
 		except Exception as e:
 			print(e)
 			yield f"Error:\nAnthropic's response for model: {user_session.model}\n{e}"
 
 
-	# map the PROVIDERS to their corresponding streamer, so
-	# the 'async def' for each must be defined before here.
+	# map the provider to the corresponding streamer, so
+	# the 'async def' for it must be defined before this point.
 	STREAMER_MAP = {
 		"Anthropic": AnthropicResponseStreamer,
 	}
@@ -186,18 +260,18 @@ async def home(request: Request, client: Client):
 
 
 	# **********************
-	# start ui via nicgui:
+	# start ui using NiceGUI:
 	# **********************
 
-	user_settings.current_primary_color = user_settings.current_primary_color if user_settings.current_primary_color is not None else '#4CAF50' # green
+	user_settings.current_primary_color = '#4CAF50' # green
 	ui.colors(primary=str(user_settings.current_primary_color))
 
 	darkness = ui.dark_mode()
 	darkness_value = user_settings.darkness if user_settings.darkness is not None else True
 	darkness.set_value(darkness_value)
 
-	user_session.provider = "Anthropic"
-	user_session.model = user_settings.provider_models.get(user_session.provider, ['claude-3-7-sonnet-20250219'])[0]
+	user_session.provider = 'Anthropic'
+	user_session.model = 'claude-3-7-sonnet-20250219'
 
 	async def windowInnerHeight():
 		window_innerHeight = await ui.run_javascript(f"window.innerHeight")
@@ -237,12 +311,6 @@ async def home(request: Request, client: Client):
 	async def clear_chat():
 		user_session.message_container.clear()
 		user_session.chat_history = ""
-		# get a list of all objects tracked by the garbage collector
-		# all_objects = gc.get_objects()
-		# print(len(all_objects))
-		# gc.collect()
-		# all_objects = gc.get_objects()
-		# print(len(all_objects))
 
 
 	async def save_chat(text) -> None:
@@ -480,7 +548,7 @@ async def home(request: Request, client: Client):
 					ui.textarea(label="Prompt:", placeholder=f"Enter your prompt here...")
 					.classes("w-full")
 					.props("clearable")
-					.props("rows=2")
+					.props("rows=5")
 					.props("spellcheck=false")
 					.props("autocomplete=off")
 					.props("autocorrect=off")
@@ -579,6 +647,13 @@ async def home(request: Request, client: Client):
 			.tooltip("Reload app") \
 			.props('no-caps flat fab-mini')
 
+			ui.button(
+				icon='logout',
+				on_click=lambda: app.shutdown()
+			) \
+			.tooltip("Shutdown app") \
+			.props('no-caps flat fab-mini')
+
 
 			# this only appears during long streaming responses:
 			user_session.abort_stream = ui.button(
@@ -593,7 +668,7 @@ async def home(request: Request, client: Client):
 
 	#########################################################################
 	# this app's heart and raison d'etre ...
-	# which contains the text generated responses from LLMs of AI providers:
+	# which contains the text generated responses from the AI model:
 	#########################################################################
 	with ui.element('div').classes('flex flex-col min-h-full w-full mx-auto'):
 		user_session.message_container = (
