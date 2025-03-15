@@ -52,8 +52,8 @@ class UserSession:
 		self.app_version = "2025.03.15.0"
 		self.provider = "Anthropic"
 		self.model = "claude-3-7-sonnet-20250219"
-		self.ui_page = None
 		self.chat_history = ""
+		self.chat_history_shown = False
 		self.send_button = None
 		self.thinking_label = None
 		self.chunks = ""
@@ -141,8 +141,6 @@ async def home(request: Request, client: Client):
 
 	async def AnthropicResponseStreamer(prompt):
 		global args, user_session
-
-		print(f"prompt:\n{prompt}\n")
 
 		# calculate a safe max_tokens value
 		estimated_input_tokens = int(len(prompt) // 4)  # conservative estimate
@@ -298,31 +296,30 @@ async def home(request: Request, client: Client):
 	async def send_prompt_to_ai() -> None:
 		global previous_chat_history
 		prompt_sent = bool(user_prompt.value and user_prompt.value.strip())
+		prompt = ""
 		user_session.provider = user_session.provider
 		user_session.model = user_session.model
+
+		format_desired = ""
+		if args.no_markdown:
+			format_desired += f"""\nIMPORTANT:
+1. NO Markdown formatting
+2. NO ellipsis  NO em dash  NO '.,-'  NO ',-'  NO '-,'  NO '--'  NO '*'
+3. Use hyphens only for legitimate words or plain text lists
+4. Simple numbers and hyphens are allowed for lists ... like this: 1. whatever and - whatever
+"""
+
 		if not prompt_sent:
 			ui.notify("Prompt is empty, please type something.", position="top", timeout=2000)
 			return
 		else:
-			user_session.chat_history += user_prompt.value + " \n"
+			user_session.chat_history += " \n" + user_prompt.value + " \n" + format_desired
 
-		prompt = ""
-
-		if previous_chat_history:
-			print(f"previous_chat_history:\n{previous_chat_history[:70]}\n")
-			prompt += f"\n=== PREVIOUS CHAT HISTORY ===\n{previous_chat_history}\n=== END PREVIOUS CHAT HISTORY ===\n"
-			if not prompt.endswith("\n\n"):
-				prompt += "\n\n"
-			# avoid adding it multiple times:
-			previous_chat_history = None
-
-		prompt += user_prompt.value
-		
-		# prompt += f"ME: {prompt}"
-		if args.no_markdown:
-			prompt += "\n=== IMPORTANT ===\nNever respond with Markdown formatting, plain text only but simple numbers and hyphens are allowed for lists ... like this: 1. whatever and - whatever.\n=== END IMPORTANT ===\n\n"
-
-		print(f">>> full prompt:\n{prompt}\n<<< end\n")
+		if not user_session.chat_history_shown:
+			prompt += user_session.chat_history
+			user_session.chat_history_shown = True
+		else:
+			prompt += user_prompt.value + " \n" + format_desired
 
 		# clear/reset for next prompt by user:
 		user_prompt.value = ''
@@ -383,6 +380,7 @@ async def home(request: Request, client: Client):
 		# ************************
 		# *** stream has ended ***
 		# ************************
+
 
 		async def copy_prompt_ME_back_to_prompt(prompt):
 			try:
@@ -650,7 +648,8 @@ def main():
 	
 	if args.chat_history:
 		print(f"Loading chat history from: {args.chat_history}")
-		user_session.chat_history =  = load_chat_history(args.chat_history)
+		user_session.chat_history += f"\n=== PREVIOUS CHAT HISTORY ===\n{load_chat_history(args.chat_history)}\n=== END PREVIOUS CHAT HISTORY ===\n"
+
 
 	ui.run(
 		title="Thinking Claude",
