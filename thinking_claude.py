@@ -106,38 +106,6 @@ async def home(request: Request, client: Client):
 		content = re.sub(r'^\s*[-\*]\s+', '', content, flags=re.MULTILINE)  # Bulleted lists: - text or * text
 		return content
 
-	# async def update_response_message_container(content: str):
-	#   # show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
-	#   end_time = time.time()
-	#   elapsed_time = end_time - user_session.start_time
-	#   minutes, seconds = divmod(elapsed_time, 60)
-	#   end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
-	#   if content.startswith('<<FIN_LOCAL>>'):
-	#       try:
-	#           user_session.thinking_label.set_visibility(False)
-	#           user_session.send_button.set_enabled(True)
-	#       except Exception as e:
-	#           print(e)
-	#           pass
-	#       return
-	#   try:
-	#       clean_content = remove_markdown(content)
-	#       escaped_content = html.escape(clean_content)
-	#       with user_session.message_container:
-	#           await ui.context.client.connected() # necessary?
-	#           user_session.response_message.clear() # cleared for each chunk = why?
-	#           with user_session.response_message:
-	#               user_session.chunks += "" if escaped_content is None else escaped_content
-	#               ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
-	#           user_session.response_message.props(f'stamp="{end_time_date}"')
-	#           user_session.response_message.update()
-	#           await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
-	#   except Exception as e:
-	#       print(e)
-	#       user_session.thinking_label.set_visibility(False)
-	#       user_session.send_button.set_enabled(True)
-	#       pass
-
 
 	async def AnthropicResponseStreamer(prompt):
 		global args, user_session
@@ -337,7 +305,8 @@ async def home(request: Request, client: Client):
 			me_message = ui.chat_message(sent=True, stamp=timestamp)
 			me_message.clear()
 			with me_message:
-				ui.html(f"<pre style='white-space: pre-wrap;'>ME:\n{prompt}</pre>")
+				# ui.html(f"<pre style='white-space: pre-wrap;'>ME:\n{prompt}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'>ME:\n{html.escape(prompt)}</pre>")
 
 			user_session.response_message = ui.chat_message(sent=False, stamp=timestamp)
 
@@ -357,7 +326,8 @@ async def home(request: Request, client: Client):
 			user_session.response_message.clear() # cleared for each chunk = why?
 			with user_session.response_message:
 				user_session.chunks += "" if chunk is None else chunk
-				ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
+				# ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{html.escape(user_session.chunks)}</pre>")
 			
 			# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
 			end_time = time.time()
