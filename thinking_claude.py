@@ -1,3 +1,7 @@
+import argparse
+import datetime
+import os
+import sys
 import html
 import re
 from datetime import datetime
@@ -9,6 +13,38 @@ import anthropic
 
 from fastapi import Request
 from nicegui import app, ui, run, Client, events
+
+args = None
+
+def setup_argument_parser():
+	parser = argparse.ArgumentParser(description='Chat with Claude 3.7 Sonnet and 32K tokens of thinking.')
+	parser.add_argument('--request_timeout', type=int, default=300, 
+						help='Maximum timeout for each streamed chunk of output (default: 300 seconds or about 5 minutes)')
+	parser.add_argument('--thinking_budget', type=int, default=32000, 
+						help='Maximum tokens for AI thinking (default: 32000)')
+	parser.add_argument('--max_tokens', type=int, default=12000, 
+						help='Maximum tokens for output (default: 12000)')
+	parser.add_argument('--context_window', type=int, default=204648, 
+						help='Context window for Claude 3.7 Sonnet (default: 204648)')
+	parser.add_argument('--save_dir', type=str, default=".", 
+						help='Directory to save output files (default: current directory)')
+	parser.add_argument('--chat_history', type=str, default=None, 
+						help='Optional chat history text file to continue a conversation')
+	parser.add_argument('--no_markdown', action='store_true', 
+						help='Tell Claude not to respond with Markdown formatting')
+	return parser
+
+def load_chat_history(history_file):
+	if not os.path.exists(history_file):
+		print(f"Chat history file not found: {history_file}")
+		return ""
+	try:
+		with open(history_file, 'r', encoding='utf-8') as f:
+			content = f.read()
+		return content
+	except Exception as e:
+		print(f"Error loading chat history: {e}")
+		return ""
 
 class UserSession:
 	def __init__(self):
@@ -31,31 +67,31 @@ async def home(request: Request, client: Client):
 
 	ui.add_body_html(r'''
 	<script>
-	    function copyToClipboard(meId, aiId) {
-	        const meElement = document.getElementById(`c${meId}`);
-	        const aiElement = document.getElementById(`c${aiId}`);
-	        let text = "";
-	        if (meElement) {
-	            text += meElement.innerText;
-	        }
-	        if (aiElement) {
-	            text += aiElement.innerText;
-	        }
-	        // to avoid having to edit (find/replace), remove most Markdown in AI responses:
-	        let clipText = "";
-	        const lines = text.split("\n");
-	        const filteredLines = lines
-	            .map(line => {
-	                const cleanedLine = line.replace(/(\*\*|##|###)/g, "").trim();
-	                return cleanedLine === "AI:" ? "\n" + cleanedLine : cleanedLine;
-	            })
-	            .filter(line => line !== "content_paste");
-	        const textWithoutMarkdownAndContentPaste = filteredLines.join("\n") + "\n";
-	        clipText = textWithoutMarkdownAndContentPaste;
-	        navigator.clipboard.writeText(clipText)
-	            .then(() => console.log("chat copied to clipboard"))
-	            .catch(err => console.error("failed to copy chat: ", err));
-	    }
+		function copyToClipboard(meId, aiId) {
+			const meElement = document.getElementById(`c${meId}`);
+			const aiElement = document.getElementById(`c${aiId}`);
+			let text = "";
+			if (meElement) {
+				text += meElement.innerText;
+			}
+			if (aiElement) {
+				text += aiElement.innerText;
+			}
+			// to avoid having to edit (find/replace), remove most Markdown in AI responses:
+			let clipText = "";
+			const lines = text.split("\n");
+			const filteredLines = lines
+				.map(line => {
+					const cleanedLine = line.replace(/(\*\*|##|###)/g, "").trim();
+					return cleanedLine === "AI:" ? "\n" + cleanedLine : cleanedLine;
+				})
+				.filter(line => line !== "content_paste");
+			const textWithoutMarkdownAndContentPaste = filteredLines.join("\n") + "\n";
+			clipText = textWithoutMarkdownAndContentPaste;
+			navigator.clipboard.writeText(clipText)
+				.then(() => console.log("chat copied to clipboard"))
+				.catch(err => console.error("failed to copy chat: ", err));
+		}
 	</script>
 	''')
 
@@ -113,9 +149,7 @@ async def home(request: Request, client: Client):
 
 
 	async def AnthropicResponseStreamer(prompt):
-		# # prefix the no-markdown instruction directly to the user prompt if needed
-		# if args.no_markdown:
-		#     prompt = "Never respond with Markdown formatting, plain text only.\n\n"
+		global args
 			
 		# if current_chat_history:
 		#     prompt += current_chat_history
@@ -124,6 +158,8 @@ async def home(request: Request, client: Client):
 		
 		# add the current input to the prompt
 		prompt += f"ME: {prompt}"
+		if args.no_markdown:
+		    prompt += "\nIMPORTANT: Never respond with Markdown formatting, plain text only but simple numbers and hyphens for lists are ok ... such as 1. whatever and - whatever.\n"
 
 		# calculate a safe max_tokens value
 		estimated_input_tokens = int(len(prompt) // 4)  # conservative estimate
@@ -593,13 +629,32 @@ async def home(request: Request, client: Client):
 
 
 def main():
+	global args
+	parser = setup_argument_parser()
+	args = parser.parse_args()
+	
+	print("=" * 80)
+	print("Current Claude Settings:")
+	print(f"Thinking Budget: {args.thinking_budget} tokens")
+	print(f"Max Output Tokens: {args.max_tokens}")
+	print(f"No Markdown: {'true' if args.no_markdown else 'false'}")
+	if args.chat_history:
+		print(f"Continuing chat from: {args.chat_history}")
+	print("=" * 80)
+	
+	previous_chat_history = ""
+	if args.chat_history:
+		print(f"Loading chat history from: {args.chat_history}")
+		previous_chat_history = load_chat_history(args.chat_history)
+
 	ui.run(
 		title="Thinking Claude",
 		reload=False,
 		dark=True,
-        favicon="static/apikeys.png",
+		favicon="static/apikeys.png",
 	)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
 	main()
+
