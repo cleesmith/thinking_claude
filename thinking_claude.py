@@ -20,13 +20,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import Response
 
 from nicegui import app, ui, run, Client, events
-from nicegui import __version__ as nv
 
 import anthropic
-
-from anthropic import __version__ as av
-
-from importlib.metadata import version, PackageNotFoundError
 
 from user_session_settings import UserSession
 from user_session_settings import UserSettings
@@ -40,7 +35,6 @@ async def home(request: Request, client: Client):
 	# async def keys2text(request: Request, client, ui, user_session, user_settings) -> None:
 
 	user_session = UserSession()
-	user_session.client_ip = client.ip
 	user_settings = UserSettings()
 
 	ui.add_body_html('''
@@ -96,9 +90,6 @@ async def home(request: Request, client: Client):
 		end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
 		if content.startswith('<<FIN_LOCAL>>'):
 			try:
-				# user_session.response_message.props(f'stamp="{end_time_date}"')
-				# user_session.response_message.update()
-				# await user_session.ui_page.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
 				user_session.thinking_label.set_visibility(False)
 				user_session.send_button.set_enabled(True)
 				user_session.abort_stream.set_visibility(False)
@@ -142,13 +133,12 @@ async def home(request: Request, client: Client):
 		if user_session.model is None: yield ""; return # sometimes model list is empty
 		pm = "Anthropic"
 		provider_api_key = user_settings.get_provider_setting(pm, 'api_key')
-		if provider_api_key is None or provider_api_key.strip() == "":
-			user_session.providers.remove(pm) if pm in user_settings.providers else None
-			yield ""; return
+		# if provider_api_key is None or provider_api_key.strip() == "":
+		# 	yield ""; return
 		provider_timeout = user_settings.get_provider_setting(pm, 'timeout')
 		try:
 			client = anthropic.Anthropic(
-				api_key=provider_api_key,
+				# api_key=provider_api_key,
 				timeout=provider_timeout,
 				max_retries=0,
 			)
@@ -157,7 +147,7 @@ async def home(request: Request, client: Client):
 				"model": user_session.model,
 				"max_tokens": user_settings.get_provider_setting('Anthropic', 'max_tokens'), # error if this is missing <= why?
 				}
-			if user_session.ui_knob_temp.value is not None: params["temperature"] = user_session.ui_knob_temp.value
+			print(f"AnthropicResponseStreamer: params:\n{params}")
 			with client.messages.stream(**params) as stream:
 				for content in stream.text_stream:
 					if user_session.abort:
@@ -292,11 +282,9 @@ async def home(request: Request, client: Client):
 
 	async def send_prompt_to_ai() -> None:
 		prompt_sent = bool(user_prompt.value and user_prompt.value.strip())
-		user_session.provider = user_session.ui_select_provider.value
-		user_session.model = user_session.ui_select_model.value
-		if user_session.provider == 'Anthropic':
-			pass
-		elif not prompt_sent:
+		user_session.provider = user_session.provider
+		user_session.model = user_session.model
+		if not prompt_sent:
 			ui.notify("Prompt is empty, please type something.", position="top", timeout=2000)
 			return
 		else:
@@ -309,7 +297,7 @@ async def home(request: Request, client: Client):
 		user_session.thinking_label.set_visibility(True)
 		user_session.abort_stream.set_visibility(True)
 
-		# track the elapsed time from sent message until end of response message:
+		# track the elapsed time from sent message/prompt until end of response message:
 		user_session.start_time = time.time()
 
 		user_session.response_message = None
@@ -318,7 +306,7 @@ async def home(request: Request, client: Client):
 			me_message = ui.chat_message(sent=True, stamp=timestamp)
 			me_message.clear()
 			with me_message:
-				ui.html(f"<pre style='white-space: pre-wrap;'>ME:   {user_session.provider} - {user_session.model} - temp: {user_session.ui_knob_temp.value}\n{question}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'>ME:   {user_session.provider} - {user_session.model}\n{question}</pre>")
 
 			user_session.response_message = ui.chat_message(sent=False, stamp=timestamp)
 
@@ -339,18 +327,13 @@ async def home(request: Request, client: Client):
 			user_session.response_message.clear() # cleared for each chunk = why?
 			with user_session.response_message:
 				user_session.chunks += "" if chunk is None else chunk
-				if user_session.provider == 'Keys2Text':
-					ui.html(f"<pre style='white-space: pre-wrap;'><br>Keys2Text:   [{user_session.model}]  {timestamp}:\n{user_session.chunks}</pre>")
-				else:
-					ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
 			
 			# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
 			end_time = time.time()
 			elapsed_time = end_time - user_session.start_time
 			minutes, seconds = divmod(elapsed_time, 60)
 			end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
-			if user_session.provider == 'DuckDuckGo':
-				end_time_date += f" - DuckDuckGo models are not streamed, so they have slower responses."
 			user_session.response_message.props(f'stamp="{end_time_date}"')
 			user_session.response_message.update()
 			try:
@@ -407,14 +390,13 @@ async def home(request: Request, client: Client):
 					.props('icon=content_copy round flat') \
 					.style("padding: 1px 1px; font-size: 9px;")
 
-				if not (user_session.provider == 'Keys2Text' and user_session.model in ["Vitals", "ReadMe"]):
-					ui.button(
-						icon='edit',
-						on_click=lambda: copy_prompt_ME_back_to_prompt(me_message)
-					) \
-					.tooltip("reuse this prompt for editing") \
-					.props('icon=edit round flat') \
-					.style("padding: 1px 1px; font-size: 9px;")
+				ui.button(
+					icon='edit',
+					on_click=lambda: copy_prompt_ME_back_to_prompt(me_message)
+				) \
+				.tooltip("reuse this prompt for editing") \
+				.props('icon=edit round flat') \
+				.style("padding: 1px 1px; font-size: 9px;")
 
 				ui.html(f"<pre style='white-space: pre-wrap;'><br></pre>")
 			await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
@@ -609,8 +591,10 @@ async def home(request: Request, client: Client):
 			user_session.abort_stream.set_visibility(False)
 
 
-	# the app's heart and raison d'etre ...
+	#########################################################################
+	# this app's heart and raison d'etre ...
 	# which contains the text generated responses from LLMs of AI providers:
+	#########################################################################
 	with ui.element('div').classes('flex flex-col min-h-full w-full mx-auto'):
 		user_session.message_container = (
 			ui.element("div")
@@ -631,7 +615,7 @@ async def home(request: Request, client: Client):
 				with ui.column():
 					with ui.row().classes("w-full items-center mb-0.1 space-x-2"):
 						ui.space()
-						ui.label('Keys2Text Settings').style("font-size: 20px; font-weight: bold").classes("m-0")
+						ui.label('ThinkingClaude Settings').style("font-size: 20px; font-weight: bold").classes("m-0")
 
 						def save_settings(dark_mode_switch, primary_color, provider_inputs):
 							user_settings.settings_updated = True
@@ -716,15 +700,6 @@ async def home(request: Request, client: Client):
 										.props("spellcheck=false") \
 										.props("autocomplete=off") \
 										.props("autocorrect=off")
-
-										if provider_name in ['Ollama', 'OpenRouter', 'LMStudio']:
-											inputs['base_url'] = ui.input(
-												label='Base URL', 
-												value=user_settings.get_provider_setting(provider_name, 'base_url')) \
-											.classes('w-full mb-2') \
-											.props("spellcheck=false") \
-											.props("autocomplete=off") \
-											.props("autocorrect=off")
 
 										if provider_name == 'Anthropic':
 											inputs['max_tokens'] = ui.input(

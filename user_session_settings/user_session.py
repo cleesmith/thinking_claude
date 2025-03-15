@@ -9,25 +9,15 @@ class UserSession:
 
 	def __init__(self):
 		#                   year.mo.ver
-		self.app_version = "2025.01.1.0" # keep user_*'s up-to-date
-		# 14 days duration in seconds before refresh user's google SSO signin:
-		self.signin_timeout = 1209600 
-		self.client_ip = None # important
-		self.users_google_sub = None # important
-		self.sambuca = None # important
+		self.app_version = "2025.03.15.0"
 		self.path_to_settings = None # important
 		self.session_id = None
 		self.session_cookie = None
 
-		# from this list, determine which providers are available for user's session:
-		self.providers = [
-			"Anthropic"
-		]
+		self.provider = "Anthropic"
+		self.model = "claude-3-7-sonnet-20250219"
 
 		self.ui_page = None
-		self.splash_dialog = None
-		self.splashed = False
-		self.total_models = 0
 		self.saved_chat_histories = []
 		self.chat_history = ""
 		self.send_button = None
@@ -38,10 +28,4 @@ class UserSession:
 		self.start_time = None
 		self.message_container = None
 		self.response_message = None
-		self.ui_select_provider = None
-		self.provider = None
-		self.ui_select_model = None
-		self.model = ""
-		self.ui_button_temp = None
-		self.ui_knob_temp = None
 
