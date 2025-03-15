@@ -1,31 +1,17 @@
-import os
-import platform
-import sys
-import signal
-import traceback
-import uuid
 import html
 import re
 from datetime import datetime
 import time
-
 import asyncio
 import json
 
-import httpx
-
-from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi import HTTPException, Request, Depends, status, WebSocket, WebSocketDisconnect
-from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import Response
-
-from nicegui import app, ui, run, Client, events
-
 import anthropic
+
+from fastapi import Request
+from nicegui import app, ui, run, Client, events
 
 class UserSession:
 	def __init__(self):
-		#                   year.mo.ver
 		self.app_version = "2025.03.15.0"
 		self.provider = "Anthropic"
 		self.model = "claude-3-7-sonnet-20250219"
@@ -43,38 +29,35 @@ class UserSession:
 async def home(request: Request, client: Client):
 	user_session = UserSession()
 
-	ui.add_body_html('''
+	ui.add_body_html(r'''
 	<script>
-		function copyToClipboard(meId, aiId) {
-			const meElement = document.getElementById(`c${meId}`);
-			const aiElement = document.getElementById(`c${aiId}`);
-			let text = "";
-			if (meElement) {
-				text += meElement.innerText;
-			}
-			if (aiElement) {
-				text += aiElement.innerText;
-			}
-
-			// to avoid having to edit (find/replace), remove most Markdown in AI responses:
-			let clipText = "";
-			const lines = text.split("\\n");
-			const filteredLines = lines
-				.map(line => {
-					const cleanedLine = line.replace(/(\*\*|##|###)/g, "").trim();
-					return cleanedLine === "AI:" ? "\\n" + cleanedLine : cleanedLine;
-				})
-				.filter(line => line !== "content_paste");
-			const textWithoutMarkdownAndContentPaste = filteredLines.join("\\n") + "\\n";
-			clipText = textWithoutMarkdownAndContentPaste;
-
-			navigator.clipboard.writeText(clipText)
-				.then(() => console.log("chat copied to clipboard"))
-				.catch(err => console.error("failed to copy chat: ", err));
-		}
+	    function copyToClipboard(meId, aiId) {
+	        const meElement = document.getElementById(`c${meId}`);
+	        const aiElement = document.getElementById(`c${aiId}`);
+	        let text = "";
+	        if (meElement) {
+	            text += meElement.innerText;
+	        }
+	        if (aiElement) {
+	            text += aiElement.innerText;
+	        }
+	        // to avoid having to edit (find/replace), remove most Markdown in AI responses:
+	        let clipText = "";
+	        const lines = text.split("\n");
+	        const filteredLines = lines
+	            .map(line => {
+	                const cleanedLine = line.replace(/(\*\*|##|###)/g, "").trim();
+	                return cleanedLine === "AI:" ? "\n" + cleanedLine : cleanedLine;
+	            })
+	            .filter(line => line !== "content_paste");
+	        const textWithoutMarkdownAndContentPaste = filteredLines.join("\n") + "\n";
+	        clipText = textWithoutMarkdownAndContentPaste;
+	        navigator.clipboard.writeText(clipText)
+	            .then(() => console.log("chat copied to clipboard"))
+	            .catch(err => console.error("failed to copy chat: ", err));
+	    }
 	</script>
 	''')
-
 
 	def remove_markdown(content: str) -> str:
 		content = re.sub(r'\*\*(.*?)\*\*', r'\1', content)  # Bold: **text**
@@ -154,7 +137,6 @@ async def home(request: Request, client: Client):
 		if max_tokens <= 32000:
 			max_tokens = 32000 + 12000
 
-		# Prepare messages list - simple user message with prefixed instruction
 		messages = [{"role": "user", "content": prompt}]
 
 		full_response = ""

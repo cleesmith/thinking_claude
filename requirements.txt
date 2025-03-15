@@ -1,4 +1,5 @@
 # March 2025:
-nicegui==2.9.0
-httpx==0.27.2
-anthropic==0.42.0
+# anthropic==0.42.0
+anthropic
+# nicegui==2.9.0
+nicegui
