@@ -15,6 +15,7 @@ from fastapi import Request
 from nicegui import app, ui, run, Client, events
 
 args = None
+previous_chat_history = None
 
 def setup_argument_parser():
 	parser = argparse.ArgumentParser(description='Chat with Claude 3.7 Sonnet and 32K tokens of thinking.')
@@ -107,71 +108,55 @@ async def home(request: Request, client: Client):
 		content = re.sub(r'^\s*[-\*]\s+', '', content, flags=re.MULTILINE)  # Bulleted lists: - text or * text
 		return content
 
-	async def update_response_message_container(content: str):
-		# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
-		end_time = time.time()
-		elapsed_time = end_time - user_session.start_time
-		minutes, seconds = divmod(elapsed_time, 60)
-		end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
-		if content.startswith('<<FIN_LOCAL>>'):
-			try:
-				user_session.thinking_label.set_visibility(False)
-				user_session.send_button.set_enabled(True)
-			except Exception as e:
-				print(e)
-				pass
-			return
-		try:
-			clean_content = remove_markdown(content)
-			escaped_content = html.escape(clean_content)
-			with user_session.message_container:
-				await ui.context.client.connected() # necessary?
-				user_session.response_message.clear() # cleared for each chunk = why?
-				with user_session.response_message:
-					user_session.chunks += "" if escaped_content is None else escaped_content
-					ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
-				user_session.response_message.props(f'stamp="{end_time_date}"')
-				user_session.response_message.update()
-				await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
-		except Exception as e:
-			print(e)
-			user_session.thinking_label.set_visibility(False)
-			user_session.send_button.set_enabled(True)
-			pass
-
-	def convert_to_int(s: str, default: int) -> int:
-		try:
-			return int(s)
-		except ValueError:
-			return default
-		except Exception:
-			return default
+	# async def update_response_message_container(content: str):
+	# 	# show elapsed time, clock time, calendar date, and update stamp in ui.chat_message:
+	# 	end_time = time.time()
+	# 	elapsed_time = end_time - user_session.start_time
+	# 	minutes, seconds = divmod(elapsed_time, 60)
+	# 	end_time_date = f"{int(minutes)}:{seconds:.2f} elapsed at " + datetime.now().strftime("%I:%M:%S %p") + " on " + datetime.now().strftime("%A, %b %d, %Y")
+	# 	if content.startswith('<<FIN_LOCAL>>'):
+	# 		try:
+	# 			user_session.thinking_label.set_visibility(False)
+	# 			user_session.send_button.set_enabled(True)
+	# 		except Exception as e:
+	# 			print(e)
+	# 			pass
+	# 		return
+	# 	try:
+	# 		clean_content = remove_markdown(content)
+	# 		escaped_content = html.escape(clean_content)
+	# 		with user_session.message_container:
+	# 			await ui.context.client.connected() # necessary?
+	# 			user_session.response_message.clear() # cleared for each chunk = why?
+	# 			with user_session.response_message:
+	# 				user_session.chunks += "" if escaped_content is None else escaped_content
+	# 				ui.html(f"<pre style='white-space: pre-wrap;'><br>AI:\n{user_session.chunks}</pre>")
+	# 			user_session.response_message.props(f'stamp="{end_time_date}"')
+	# 			user_session.response_message.update()
+	# 			await ui.run_javascript('scrollable.scrollTo(0, scrollable.scrollHeight)')
+	# 	except Exception as e:
+	# 		print(e)
+	# 		user_session.thinking_label.set_visibility(False)
+	# 		user_session.send_button.set_enabled(True)
+	# 		pass
 
 
 	async def AnthropicResponseStreamer(prompt):
-		global args
-			
-		# if current_chat_history:
-		#     prompt += current_chat_history
-		#     if not prompt.endswith("\n\n"):
-		#         prompt += "\n\n"
-		
-		# add the current input to the prompt
-		prompt += f"ME: {prompt}"
-		if args.no_markdown:
-		    prompt += "\nIMPORTANT: Never respond with Markdown formatting, plain text only but simple numbers and hyphens for lists are ok ... such as 1. whatever and - whatever.\n"
+		global args, previous_chat_history
+
+		print(f"prompt:\n{prompt}\n")
 
 		# calculate a safe max_tokens value
 		estimated_input_tokens = int(len(prompt) // 4)  # conservative estimate
 		total_estimated_input_tokens = estimated_input_tokens
 
-		max_safe_tokens = max(5000, 204648 - total_estimated_input_tokens - 2000)  # 2000 token buffer for safety
-		# Use the minimum of the requested max_tokens and what we calculated as safe:
-		max_tokens = int(min(12000, max_safe_tokens))
+		max_safe_tokens = max(5000, args.context_window - total_estimated_input_tokens - 2000)  # 2000 token buffer for safety
+		# use the minimum of the requested max_tokens and what we calculated as safe:
+		max_tokens = int(min(args.max_tokens, max_safe_tokens))
 
 		# ensure max_tokens is always greater than thinking budget
-		if max_tokens <= 32000:
-			max_tokens = 32000 + 12000
+		if max_tokens <= args.thinking_budget:
+			max_tokens = args.thinking_budget + args.max_tokens
 
 		messages = [{"role": "user", "content": prompt}]
 
@@ -180,7 +165,7 @@ async def home(request: Request, client: Client):
 
 		try:
 			client = anthropic.Anthropic(
-				timeout=300,
+				timeout=args.request_timeout,
 				max_retries=0  # default is 2
 			)
 
@@ -192,7 +177,7 @@ async def home(request: Request, client: Client):
 				messages=messages,
 				thinking={
 					"type": "enabled",
-					"budget_tokens": 32000
+					"budget_tokens": args.thinking_budget
 				},
 				betas=["output-128k-2025-02-19"]
 			) as stream:
@@ -242,11 +227,9 @@ async def home(request: Request, client: Client):
 	# **********************
 
 	ui.colors(primary=str('#4CAF50'))
-
 	darkness = ui.dark_mode()
 	darkness_value = True
 	darkness.set_value(darkness_value)
-
 	user_session.provider = 'Anthropic'
 	user_session.model = 'claude-3-7-sonnet-20250219'
 
@@ -315,6 +298,7 @@ async def home(request: Request, client: Client):
 
 
 	async def send_prompt_to_ai() -> None:
+		global previous_chat_history
 		prompt_sent = bool(user_prompt.value and user_prompt.value.strip())
 		user_session.provider = user_session.provider
 		user_session.model = user_session.model
@@ -323,7 +307,26 @@ async def home(request: Request, client: Client):
 			return
 		else:
 			user_session.chat_history += user_prompt.value + " \n"
-		question = user_prompt.value
+
+		prompt = ""
+
+		if previous_chat_history:
+			print(f"previous_chat_history:\n{previous_chat_history[:70]}\n")
+		    prompt += f"\n=== PREVIOUS CHAT HISTORY ===\n{previous_chat_history}\n=== END PREVIOUS CHAT HISTORY ===\n"
+		    if not prompt.endswith("\n\n"):
+		        prompt += "\n\n"
+		    # avoid adding it multiple times:
+		    previous_chat_history = None
+
+		prompt += user_prompt.value
+		
+		# prompt += f"ME: {prompt}"
+		if args.no_markdown:
+		    prompt += "\n=== IMPORTANT ===\nNever respond with Markdown formatting, plain text only but simple numbers and hyphens are allowed for lists ... like this: 1. whatever and - whatever.\n=== END IMPORTANT ===\n\n"
+
+		print(f">>> full prompt:\n{prompt}\n<<< end\n")
+
+		# clear/reset for next prompt by user:
 		user_prompt.value = ''
 
 		# disable Send button, start Thinking:
@@ -339,7 +342,7 @@ async def home(request: Request, client: Client):
 			me_message = ui.chat_message(sent=True, stamp=timestamp)
 			me_message.clear()
 			with me_message:
-				ui.html(f"<pre style='white-space: pre-wrap;'>ME:\n{question}</pre>")
+				ui.html(f"<pre style='white-space: pre-wrap;'>ME:\n{prompt}</pre>")
 
 			user_session.response_message = ui.chat_message(sent=False, stamp=timestamp)
 
@@ -352,7 +355,9 @@ async def home(request: Request, client: Client):
 		except Exception as e:
 			pass # no biggie, if can't scroll then user can do it manually
 
+		#                  ************
 		async for chunk in run_streamer(user_session.provider, user_session.chat_history):
+		#                  ************
 			await ui.context.client.connected() # necessary?
 			user_session.response_message.clear() # cleared for each chunk = why?
 			with user_session.response_message:
@@ -629,7 +634,7 @@ async def home(request: Request, client: Client):
 
 
 def main():
-	global args
+	global args, previous_chat_history
 	parser = setup_argument_parser()
 	args = parser.parse_args()
 	
@@ -642,7 +647,6 @@ def main():
 		print(f"Continuing chat from: {args.chat_history}")
 	print("=" * 80)
 	
-	previous_chat_history = ""
 	if args.chat_history:
 		print(f"Loading chat history from: {args.chat_history}")
 		previous_chat_history = load_chat_history(args.chat_history)
