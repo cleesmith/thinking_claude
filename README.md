@@ -27,7 +27,7 @@ Most importantly, the thinking process gets its own separate token budget, meani
 ## Installation
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.10 or higher
 - An Anthropic API key with access to Claude 3.7 Sonnet
 
 ### Steps
